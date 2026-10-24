@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "842194745336",
+    "project_id": "mahascholar-testing",
+    "storage_bucket": "mahascholar-testing.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:842194745336:android:bc58642c187636306d480d",
+        "android_client_info": {
+          "package_name": "com.example.shala_saathi"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCKcpttb8Qh_9Zrm46RNM5eNYVsc0UPrDw"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
