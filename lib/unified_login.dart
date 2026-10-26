@@ -6,6 +6,8 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import 'study_lock/push_notification_service.dart';
+
 /// Roles resolved after sign-in.
 enum AppRole { admin, student }
 
@@ -39,7 +41,12 @@ class AuthService {
 
   static User? get currentUser => _auth.currentUser;
 
-  static Future<void> signOut() => _auth.signOut();
+  /// Removes this device's FCM token while the user is still authenticated
+  /// (Firestore rules need the auth context), then signs out.
+  static Future<void> signOut() async {
+    await PushNotificationService.instance.detach();
+    await _auth.signOut();
+  }
 
   /// Order of trust: custom claim, then `users/{uid}.role` in Firestore.
   /// A first-time user gets a `student` profile; elevated roles can only be
@@ -79,17 +86,10 @@ class AuthService {
         // The write is queued by Firestore and synced when online, so it is
         // not awaited: offline, its future would only finish after the server
         // acknowledges it.
-        unawaited(doc.set({
-          'role': 'student',
-          'name': (name ?? user.displayName ?? '').trim(),
-          'email': user.email,
-          if (standard != null) 'standard': standard,
-          if (medium != null) 'medium': medium,
-          'phone': user.phoneNumber,
-          'createdAt': FieldValue.serverTimestamp(),
-        }, SetOptions(merge: true)).catchError((Object e) {
-          debugPrint('Profile creation failed: $e');
-        }));
+        unawaited(createStudentProfile(user,
+            name: name,
+            standard: standard == null ? null : int.tryParse(standard),
+            medium: medium));
         return AppRole.student;
       }
       return _isStaff(snapshot.data()?['role'])
@@ -104,6 +104,30 @@ class AuthService {
         return AppRole.student;
       }
       rethrow;
+    }
+  }
+
+  /// Creates the default `users/{uid}` student profile. Never throws: the
+  /// profile is re-created on the next sign-in if this fails (the rules only
+  /// allow `role == 'student'` on create).
+  static Future<void> createStudentProfile(
+    User user, {
+    String? name,
+    int? standard,
+    String? medium,
+  }) async {
+    try {
+      await FirebaseFirestore.instance.collection('users').doc(user.uid).set({
+        'role': 'student',
+        'name': (name ?? user.displayName ?? '').trim(),
+        'email': user.email,
+        'phone': user.phoneNumber,
+        if (standard != null) 'standard': standard,
+        if (medium != null) 'medium': medium,
+        'createdAt': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true)).timeout(const Duration(seconds: 10));
+    } catch (error) {
+      debugPrint('Profile creation failed: $error');
     }
   }
 
@@ -538,6 +562,15 @@ class _UnifiedLoginScreenState extends State<UnifiedLoginScreen> {
         } catch (_) {
           // The name is also saved in the Firestore profile.
         }
+        final created = result.user;
+        if (created != null) {
+          await AuthService.createStudentProfile(
+            created,
+            name: _name,
+            standard: int.tryParse(_standard),
+            medium: _medium,
+          );
+        }
       } else {
         result = await auth.signInWithEmailAndPassword(
           email: _email!,
@@ -626,8 +659,11 @@ class _UnifiedLoginScreenState extends State<UnifiedLoginScreen> {
       if (!mounted) return;
       setState(() {
         _busy = false;
-        _info = m('पासवर्ड रीसेट दुवा $email वर पाठवला.',
-            'Password reset link sent to $email.');
+        _info = m(
+            '$email नोंदणीकृत असल्यास पासवर्ड रीसेट दुवा पाठवला आहे. '
+                'इनबॉक्स व स्पॅम तपासा.',
+            'If $email is registered, a reset link was sent. '
+                'Check your inbox and spam folder.');
       });
     } catch (error) {
       _fail(error);

@@ -9,11 +9,15 @@ import 'firebase_options.dart';
 import 'basic_digital_skills.dart';
 import 'admin_dashboard.dart';
 import 'student_portal.dart';
+import 'student_onboarding.dart';
+import 'student_detailed_profile_screen.dart';
+import 'subscription.dart';
 import 'career_test.dart';
 import 'unified_login.dart';
 import 'life_skills_modules.dart';
 import 'ai_tutor.dart';
 import 'progress_report.dart';
+import 'study_lock/study_session_screen.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
@@ -951,7 +955,7 @@ class _RoleGateState extends State<_RoleGate> {
     try {
       final role = await AuthService.resolveRole(user!);
       if (!mounted) return;
-      setState(() => _role = role == AppRole.admin ? 'admin' : 'student');
+      await _enter(role);
     } catch (error) {
       // Only an authentication failure ends the session; a network problem
       // must not log a returning user out.
@@ -966,6 +970,19 @@ class _RoleGateState extends State<_RoleGate> {
         _loginMessage = describeAuthError(error, 'Semi-English');
       });
     }
+  }
+
+  /// Admins go straight to their dashboard; students without a profile are
+  /// sent through onboarding first.
+  Future<void> _enter(AppRole role) async {
+    if (role == AppRole.admin) {
+      setState(() => _role = 'admin');
+      return;
+    }
+    setState(() => _role = 'checking');
+    final needs = await studentNeedsOnboarding();
+    if (!mounted) return;
+    setState(() => _role = needs ? 'onboarding' : 'student');
   }
 
   Future<void> _signOut() async {
@@ -990,6 +1007,11 @@ class _RoleGateState extends State<_RoleGate> {
     switch (_role) {
       case 'checking':
         return const Scaffold(body: Center(child: CircularProgressIndicator()));
+      case 'onboarding':
+        return StudentOnboardingScreen(
+          onDone: () => setState(() => _role = 'student'),
+          onSignOut: _signOut,
+        );
       case 'student':
         return LearningHome(content: _content, onSignOut: _signOut);
       case 'admin':
@@ -999,9 +1021,7 @@ class _RoleGateState extends State<_RoleGate> {
       firebaseReady: _firebaseReady,
       startupError: _firebaseStartupError,
       initialMessage: _loginMessage,
-      onRole: (role) => setState(
-        () => _role = role == AppRole.admin ? 'admin' : 'student',
-      ),
+      onRole: _enter,
       onLocalDemo: () => setState(() => _role = 'student'),
     );
   }
@@ -1196,7 +1216,20 @@ class _LearningHomeState extends State<LearningHome> {
           ),
           bottomNavigationBar: NavigationBar(
             selectedIndex: _tabIndex,
-            onDestinationSelected: (index) => setState(() => _tabIndex = index),
+            onDestinationSelected: (index) {
+              if (index != 1) {
+                setState(() => _tabIndex = index);
+                return;
+              }
+              SubscriptionService.guard(
+                context,
+                feature: PremiumFeature.aiTutor,
+                firebaseReady: _firebaseReady && AuthService.currentUser != null,
+                onAllowed: () {
+                  if (mounted) setState(() => _tabIndex = 1);
+                },
+              );
+            },
             destinations: [
               for (var index = 0; index < _tabs.length; index++)
                 NavigationDestination(
@@ -1276,6 +1309,20 @@ class _LearningHomeState extends State<LearningHome> {
             ),
           ),
           const SizedBox(width: 4),
+          IconButton(
+            tooltip: 'My profile',
+            onPressed: _firebaseReady && AuthService.currentUser != null
+                ? () => Navigator.of(context).push(MaterialPageRoute<void>(
+                      builder: (_) => StudentDetailedProfileScreen(
+                        onSignOut: widget.onSignOut,
+                        onProfileChanged: (medium) {
+                          if (mounted) setState(() => _medium = medium);
+                        },
+                      ),
+                    ))
+                : null,
+            icon: const Icon(Icons.account_circle_outlined),
+          ),
           IconButton(
             tooltip: _mediumLabel(
               _medium,
@@ -2845,6 +2892,8 @@ class _StudyPage extends StatelessWidget {
             content: content,
           ),
         ),
+        const SizedBox(height: 12),
+        const StudySessionEntryCard(),
         const SizedBox(height: 17),
         _WelcomeBanner(
           isKidsZone: isKidsZone,
@@ -3255,12 +3304,18 @@ class _CompetitiveExamHub extends StatelessWidget {
                 child: SizedBox(
                   width: double.infinity,
                   child: OutlinedButton.icon(
-                    onPressed: () => _showExamModule(
+                    onPressed: () => SubscriptionService.guard(
                       context,
-                      standard: standard,
-                      medium: medium,
-                      target: target,
-                      content: content,
+                      feature: PremiumFeature.scholarZone,
+                      firebaseReady:
+                          _firebaseReady && AuthService.currentUser != null,
+                      onAllowed: () => _showExamModule(
+                        context,
+                        standard: standard,
+                        medium: medium,
+                        target: target,
+                        content: content,
+                      ),
                     ),
                     icon: Icon(
                       target == 'Scholarship'
@@ -5183,17 +5238,7 @@ class _HomeworkSolverCardState extends State<_HomeworkSolverCard> {
       debugPrint('Gemini homework solution failed: $error');
       if (!mounted) return;
       setState(() => _isGeneratingSolution = false);
-      _showPickerError(
-        _mediumLabel(
-          widget.medium,
-          marathi:
-              'उत्तर तयार झाले नाही. Firebase AI Logic जोडणी तपासून पुन्हा प्रयत्न करा.',
-          semiEnglish:
-              'Could not generate an answer. Check Firebase AI Logic / उत्तर मिळाले नाही.',
-          english:
-              'Could not generate an answer. Check Firebase AI Logic setup and try again.',
-        ),
-      );
+      _showPickerError(describeTutorError(error, widget.medium));
     }
   }
 

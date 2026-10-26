@@ -4,6 +4,8 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
+import 'student_detailed_profile_screen.dart';
+
 /// Marathi only, "English / मराठी" (Semi-English) or English only.
 String _t(String medium, String mr, String en) => switch (medium) {
       'Marathi' => mr,
@@ -722,6 +724,12 @@ class _StudentsTabState extends State<_StudentsTab> {
                             child: Text(s.title.characters.first.toUpperCase()),
                           ),
                           title: Text(s.title),
+                          onTap: () => Navigator.of(context).push(
+                            MaterialPageRoute<void>(
+                              builder: (_) =>
+                                  StudentDetailedProfileScreen(studentUid: s.id),
+                            ),
+                          ),
                           subtitle: Text([
                             if (s.email.isNotEmpty) s.email,
                             if (s.phone.isNotEmpty) s.phone,

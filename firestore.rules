@@ -1,0 +1,147 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ---------------------------------------------------------- helpers
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(uid) {
+      return signedIn() && request.auth.uid == uid;
+    }
+
+    function userDoc(uid) {
+      return /databases/$(database)/documents/users/$(uid);
+    }
+
+    // Role comes from a custom claim first, then from users/{uid}.role.
+    function roleOf(uid) {
+      return exists(userDoc(uid)) ? get(userDoc(uid)).data.get('role', '') : '';
+    }
+
+    function isAdmin() {
+      return signedIn() &&
+        (request.auth.token.get('role', '') == 'admin' ||
+         roleOf(request.auth.uid) == 'admin');
+    }
+
+    // The app treats "teacher" like "admin" for publishing content.
+    // Change to isAdmin() below to restrict content writes to admins only.
+    function isStaff() {
+      return signedIn() &&
+        (request.auth.token.get('role', '') in ['admin', 'teacher'] ||
+         roleOf(request.auth.uid) in ['admin', 'teacher']);
+    }
+
+    function isLinkedParent(studentUid) {
+      return signedIn() && exists(userDoc(studentUid)) &&
+        request.auth.uid in get(userDoc(studentUid)).data.get('parentUids', []);
+    }
+
+    // Fields a user can never change on their own profile.
+    function protectedUserFields() {
+      return ['role', 'parentUids', 'standard', 'classUpdatedAt',
+              'isPremium', 'premiumUntil', 'aiWeaknessSummary', 'weakTopics'];
+    }
+
+    // ------------------------------------------------------------ users
+    match /users/{uid} {
+      allow read: if isOwner(uid) || isAdmin();
+
+      // A new profile can only be a plain student with no linked parents.
+      allow create: if isOwner(uid) &&
+        request.resource.data.role == 'student' &&
+        !('parentUids' in request.resource.data) &&
+        !('isPremium' in request.resource.data) &&
+        !('premiumUntil' in request.resource.data);
+
+      allow update: if (isOwner(uid) &&
+          !request.resource.data.diff(resource.data).affectedKeys()
+            .hasAny(protectedUserFields())) ||
+        isAdmin();
+
+      allow delete: if false;
+
+      match /quiz_scores/{scoreId} {
+        allow read: if isOwner(uid) || isAdmin();
+        allow create: if isOwner(uid) &&
+          request.resource.data.score is number &&
+          request.resource.data.score >= 0 &&
+          request.resource.data.score <= 10;
+        allow update, delete: if false;
+      }
+
+      match /life_skills/{docId} {
+        allow read: if isOwner(uid) || isAdmin();
+        allow write: if isOwner(uid);
+      }
+
+      // The Cloud Function reads these with the Admin SDK.
+      match /fcm_tokens/{tokenId} {
+        allow read, delete: if isOwner(uid);
+        allow create, update: if isOwner(uid) &&
+          request.resource.data.keys().hasOnly(['token', 'platform', 'updatedAt']) &&
+          request.resource.data.token == tokenId;
+      }
+    }
+
+    // --------------------------------------------------- study sessions
+    match /study_sessions/{sessionId} {
+      function onlySessionFields() {
+        return request.resource.data.keys().hasOnly([
+          'studentUid', 'studentName', 'state', 'locked',
+          'startedAt', 'endedAt', 'activeSeconds', 'updatedAt'
+        ]);
+      }
+
+      function validActiveSeconds() {
+        return !('activeSeconds' in request.resource.data) ||
+          (request.resource.data.activeSeconds is number &&
+           request.resource.data.activeSeconds >= 0);
+      }
+
+      allow read: if signedIn() &&
+        (resource.data.studentUid == request.auth.uid ||
+         isLinkedParent(resource.data.studentUid) ||
+         isAdmin());
+
+      allow create: if signedIn() &&
+        request.resource.data.studentUid == request.auth.uid &&
+        request.resource.data.state == 'started' &&
+        request.resource.data.studentName is string &&
+        request.resource.data.studentName.size() <= 100 &&
+        onlySessionFields() && validActiveSeconds();
+
+      // Only the owner, never after the session has ended.
+      allow update: if signedIn() &&
+        resource.data.studentUid == request.auth.uid &&
+        request.resource.data.studentUid == resource.data.studentUid &&
+        resource.data.state != 'ended' &&
+        request.resource.data.state in ['active', 'paused', 'ended'] &&
+        onlySessionFields() && validActiveSeconds();
+
+      allow delete: if false;
+    }
+
+    // ---------------------------- teacher content and curriculum (staff)
+    match /{collection}/{docId} {
+      allow read: if signedIn() &&
+        collection in ['resources', 'learning_resources', 'videos', 'quizzes',
+                       'subjects', 'chapters', 'scholarship_questions'];
+      allow write: if isStaff() &&
+        collection in ['resources', 'learning_resources', 'videos', 'quizzes',
+                       'subjects', 'chapters', 'scholarship_questions'];
+    }
+
+    // Written only by Cloud Functions (Admin SDK bypasses these rules).
+    match /parent_link_codes/{code} {
+      allow read, write: if false;
+    }
+
+    match /parent_link_attempts/{uid} {
+      allow read, write: if false;
+    }
+  }
+}
